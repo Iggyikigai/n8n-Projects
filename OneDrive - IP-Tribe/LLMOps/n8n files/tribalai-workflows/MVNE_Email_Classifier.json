@@ -1,0 +1,3152 @@
+{
+  "name": "MVNE Email Classifier",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "function stripHtml(html=''){\n  return html.replace(/<style[\\s\\S]*?<\\/style>/gi,' ')\n             .replace(/<script[\\s\\S]*?<\\/script>/gi,' ')\n             .replace(/<[^>]+>/g,' ')\n             .replace(/\\s+/g,' ')\n             .trim();\n}\nconst headers = $json.payload?.headers || [];\nconst pick = k => headers.find(h => h.name?.toLowerCase()===k.toLowerCase())?.value || '';\nconst subject   = pick('Subject') || $json.snippet || '(no subject)';\nconst from      = pick('From');\nconst to        = pick('To');\nconst threadId  = $json.threadId;\nconst messageId = pick('Message-ID') || $json.id;\nconst bodyPlain = ($json.body?.plain) ? $json.body.plain : stripHtml($json.body?.html || '');\nconst ticket_text = `Subject:\\n${subject}\\n\\nBody:\\n${bodyPlain}`;\nreturn [{ subject, from, to, threadId, messageId, bodyPlain, ticket_text }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -960,
+        304
+      ],
+      "id": "0952d3ef-ae44-45b3-a307-b13ed893bc2b",
+      "name": "Normalise Email"
+    },
+    {
+      "parameters": {
+        "content": "#### Return all the labels from admin email\n\nThen merge with customer email content, classification and resolve the label to file the email ticket accordingly.",
+        "width": 304
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        0,
+        -16
+      ],
+      "typeVersion": 1,
+      "id": "ddd616fc-419d-4639-9565-32cceeda9705",
+      "name": "Sticky Note"
+    },
+    {
+      "parameters": {
+        "options": {
+          "responseFormat": "json_object",
+          "temperature": 0
+        }
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatDeepSeek",
+      "typeVersion": 1,
+      "position": [
+        -720,
+        16
+      ],
+      "id": "02ed8f35-f96b-4def-a7ae-b2238909314e",
+      "name": "DeepSeek Chat Model",
+      "credentials": {
+        "deepSeekApi": {
+          "id": "4fm8TKBLqEFKu0RO",
+          "name": "DeepSeek account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * INPUT SHAPES SUPPORTED\n * 1) [{ \"output\": \"{\\\"category\\\":\\\"eSim activation issue\\\",\\\"confidence\\\":0.95,\\\"rationale\\\":\\\"...\\\"}\" }]\n * 2) { data: [{ message: { content: \"{\\\"category\\\":\\\"...\\\"}\" } }] }   // OpenAI Chat JSON mode\n * 3) Direct object { category, confidence }\n *\n * OUTPUT FIELDS\n * - category: canonical category string (one of 5)\n * - confidence: number 0..1\n * - targetLabel: Gmail label to add (e.g., \"ticket/esim\")\n * (Plus everything from incoming $json to keep thread/message IDs, etc.)\n */\n\nfunction safeParse(s, fallback) {\n  if (s == null) return fallback;\n  if (typeof s === 'object') return s; // already parsed\n  try { return JSON.parse(String(s)); } catch { return fallback; }\n}\n\n// 1) Try your agent's array-of-objects format:\nlet parsed = null;\nif (Array.isArray(items) && items.length > 0) {\n  const first = items[0].json ?? items[0];         // n8n wraps under .json\n  if (first && typeof first === 'object' && 'output' in first) {\n    parsed = safeParse(first.output, null);\n  }\n}\n\n// 2) Try OpenAI Chat node style if not found:\nif (!parsed) {\n  const raw = $json?.data?.[0]?.message?.content ?? $json?.output ?? $json;\n  parsed = safeParse(raw, null);\n}\n\n// 3) If still nothing, default:\nif (!parsed) parsed = { category: 'others', confidence: 0 };\n\n// ---- Canonicalize category --------------------------------------------------\nconst c = String(parsed.category || 'others').toLowerCase().trim();\n\n// Map loose text to one of the 5 allowed categories\nfunction canonicalCategory(x) {\n  if (x.includes('roaming')) return 'data roaming connectivity issues';\n  if (x.includes('top-up') || x.includes('topup') || x.includes('top up')) return 'plan top-up issues';\n  if (x.includes('esim')) return 'eSim activation issue';\n  if (x.includes('usage')) return 'usage investigation';\n  return 'others';\n}\nconst category = canonicalCategory(c);\n\n// ---- Gmail label mapping ----------------------------------------------------\nconst catToLabel = {\n  'data roaming connectivity issues': 'ticket/roaming',\n  'plan top-up issues':               'ticket/topup',\n  'eSim activation issue':            'ticket/esim',\n  'usage investigation':              'ticket/usage',\n  'others':                           'ticket/others',\n};\n\nconst confidence = Number(parsed.confidence ?? 0);\nconst targetLabel = catToLabel[category] || 'ticket/others';\n\n// Pass through prior fields (subject, messageId, threadId, etc.)\nreturn [{\n  ...$json,\n  category,\n  confidence,\n  targetLabel\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -416,
+        160
+      ],
+      "id": "b2035785-a649-414c-acef-e54be0016a06",
+      "name": "Parse + Map category"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -176,
+        288
+      ],
+      "id": "bc90cbfb-6e2b-4b8f-bec5-370fc54fc8b4",
+      "name": "Merge"
+    },
+    {
+      "parameters": {
+        "resource": "label",
+        "returnAll": true
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        16,
+        176
+      ],
+      "id": "6569def7-1b09-475c-a1cd-5b815d7b5d9f",
+      "name": "Get many labels",
+      "webhookId": "d8494759-279d-4e72-80e5-e287c339e612",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a precise ticket triage classifier for telco support. \nChoose exactly ONE category that best matches the customer’s email content.\nAllowed categories (use these exact strings):\n- data roaming connectivity issues\n- plan top-up issues\n- eSim activation issue\n- usage investigation\n- others\n\nReturn a strict JSON object with keys:\n{\"category\": \"<one of the five>\", \"confidence\": <0..1>, \"rationale\": \"<short reason>\"}\nNo extra text.\n\nCustomer email:\nSubject: {{ $json.subject }}\nBody:\n{{ $json.bodyPlain }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        -704,
+        160
+      ],
+      "id": "e149ad12-2397-4f3d-be5c-9efac2c98071",
+      "name": "Classify"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Input: many items, each is a label (id + name)\nconst map = {};\nfor (const it of items) {\n  const { id, name } = it.json || {};\n  if (id && name) map[String(name).toLowerCase()] = id;\n}\n// Return ONE item holding the map\nreturn [{ json: { labelMap: map } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        176
+      ],
+      "id": "bfc4c202-9a67-489c-8424-10503acea1d8",
+      "name": "BuildLabelMap"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        416,
+        272
+      ],
+      "id": "17581084-e686-476f-98dd-e899d199d415",
+      "name": "Merge1"
+    },
+    {
+      "parameters": {
+        "jsCode": "const name = String($json.targetLabel || '').toLowerCase().trim();\nconst id = $json.labelMap?.[name];\nif (!id) {\n  throw new Error(`Gmail label not found: \"${$json.targetLabel}\". Check exact name in Gmail.`);\n}\nreturn [{ ...$json, targetLabelId: id }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        640,
+        272
+      ],
+      "id": "a9edfddb-a734-4d33-9107-29ff86606ac3",
+      "name": "ResolveLabelId"
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -160,
+        656
+      ],
+      "id": "40d99dcd-e853-4079-ae82-f431ea19870c",
+      "name": "Merge2"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "dedfd17a-3e31-4639-a115-b3ab218ddf46",
+              "leftValue": "={{ $json.subject }}",
+              "rightValue": "eSim activation issue",
+              "operator": {
+                "type": "string",
+                "operation": "notEquals"
+              }
+            },
+            {
+              "id": "1b214187-793c-486f-801c-88da89bc5d43",
+              "leftValue": "={{ $json.confidence }}",
+              "rightValue": 0.2,
+              "operator": {
+                "type": "number",
+                "operation": "lt"
+              }
+            }
+          ],
+          "combinator": "or"
+        },
+        "looseTypeValidation": "=false",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        240,
+        656
+      ],
+      "id": "0e4de5c7-3ca4-40f3-be90-b5b35531759e",
+      "name": "If"
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA",
+          "mode": "list",
+          "cachedResultName": "Jira Demo Spreadsheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 872154701,
+          "mode": "list",
+          "cachedResultName": "First Steps",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit#gid=872154701"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "category",
+              "lookupValue": "={{ $json.subject }}"
+            }
+          ]
+        },
+        "options": {
+          "returnFirstMatch": true
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        448,
+        736
+      ],
+      "id": "8c908dbf-3868-4717-a148-2e6cd4fec3db",
+      "name": "FirstStepLookup",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "TCDZNj0mGgrocrTe",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * Input from Google Sheets \"Lookup\":\n * { json: { category: \"esim\", steps: \"<string or JSON array>\" } }\n * Output:\n * - esimStepsHtml: HTML list to inject in email\n */\nfunction toHtmlList(stepsRaw) {\n  if (stepsRaw == null) return '<p>(No steps provided yet)</p>';\n\n  // If it's a JSON array string, parse and list it\n  if (typeof stepsRaw === 'string' && stepsRaw.trim().startsWith('[')) {\n    try {\n      const arr = JSON.parse(stepsRaw);\n      if (Array.isArray(arr) && arr.length) {\n        return '<ul>' + arr.map(s => `<li>${String(s).trim()}</li>`).join('') + '</ul>';\n      }\n    } catch {}\n  }\n\n  // Otherwise treat as plain text; split bullets by newline or \"1)\"/\"1.\" style\n  const text = String(stepsRaw).trim();\n  const lines = text\n    .split(/\\r?\\n/)\n    .map(l => l.replace(/^\\s*[-*•]\\s+/, '').replace(/^\\s*\\d+[.)]\\s+/, '').trim())\n    .filter(Boolean);\n\n  if (lines.length === 0) return '<p>(No steps provided yet)</p>';\n  return '<ul>' + lines.map(l => `<li>${l}</li>`).join('') + '</ul>';\n}\n\nconst row = $json; // one row from Lookup\nconst esimStepsHtml = toHtmlList(row.steps);\n\nlet stepsText = String($json.steps || '').trim();\nstepsText = stepsText.replace(/\\\\n/g, '<br>');   // convert literal \"\\n\" to HTML line break\n\nreturn [{\n  ...$json,\n  esimStepsHtml: `<p>${stepsText}</p>`\n}];\nreturn [{ ...$json, esimStepsHtml }];\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        656,
+        736
+      ],
+      "id": "783ebdd6-ace9-4be0-94fe-fd257415adc3",
+      "name": "RenderSteps>HTML"
+    },
+    {
+      "parameters": {
+        "operation": "reply",
+        "messageId": "={{ $('Normalise Email').item.json.messageId }}",
+        "message": "=<p>Hi there,</p> <p>Thanks for reaching out. Please follow the steps below for {{ $json.category }}:</p> {{ $json.esimStepsHtml }} <p>If these steps resolve your issue, please reply with <b>\"solved\"</b>.</p> \n<p>Otherwise, reply <b>\"not solved\"</b>.</p>\n<p>— Admin Support</p>",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        880,
+        736
+      ],
+      "id": "3cf5d700-fde1-4408-9df7-b235db8d04d1",
+      "name": "Reply FirstStep",
+      "webhookId": "8d05749f-ff31-47cf-94fb-da37ffedc783",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## Workflow A (intake)\n",
+        "height": 80,
+        "width": 304
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1584,
+        320
+      ],
+      "typeVersion": 1,
+      "id": "67c9bb12-29bc-4f95-8f94-9efdf02c195d",
+      "name": "Sticky Note1"
+    },
+    {
+      "parameters": {
+        "content": "## Workflow B (reply listener)\nProduction listener does not work due to label handling ",
+        "height": 144,
+        "width": 256
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1632,
+        928
+      ],
+      "typeVersion": 1,
+      "id": "1564294a-a2cf-4443-801c-f0d8af213de8",
+      "name": "Sticky Note2"
+    },
+    {
+      "parameters": {
+        "operation": "reply",
+        "messageId": "={{ $json.messageId }}",
+        "message": "={{ $json.reminderHtml }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2384,
+        752
+      ],
+      "id": "ea617d62-4db3-41a2-a550-815115b213de",
+      "name": "Reminder",
+      "webhookId": "8d05749f-ff31-47cf-94fb-da37ffedc783",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// === Config (change if needed) ===\nconst CLOSE_HOURS = 24;  // what you want to say in the email (content only)\nconst stepsHtml = $json.esimStepsHtml || ''; // reuse earlier steps if available\n\n// === Render HTML ===\nconst reminderHtml = `\n<div style=\"font-family: Arial, Helvetica, sans-serif; line-height:1.5; color:#111;\">\n  <p>Hello,</p>\n\n  <p>We will be closing this ticket in <b>${CLOSE_HOURS} hours</b> and will assume it is solved.</p>\n\n  <p>If the issue is <b>not solved</b>, please reply to this email with the subject title\n  <b>not solved</b> and include any additional remarks after performing the troubleshooting steps.</p>\n\n  ${\n    stepsHtml\n      ? `<hr style=\"border:none;border-top:1px solid #e5e5e5;margin:16px 0;\">\n         <p style=\"margin:0 0 6px 0;\"><b>Troubleshooting steps:</b></p>\n         ${stepsHtml}`\n      : ''\n  }\n\n  <p style=\"margin-top:16px;\">— Admin Support</p>\n</div>\n`.replace(/\\n\\s+\\n/g, '\\n'); // tidy extra blanks\n\nreturn [{ ...$json, reminderHtml }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2192,
+        752
+      ],
+      "id": "78e916e7-e700-4333-8d19-14930246b5f2",
+      "name": "reminderHTML",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "getAll",
+        "returnAll": "={{ $('IF Reply').item.json.threadId }}",
+        "simple": false,
+        "filters": {
+          "labelIds": [
+            "Label_3430728297832940128"
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        928,
+        1440
+      ],
+      "id": "f3aa1acc-67dd-4eda-b68a-d1aa4bcb1553",
+      "name": "Get Many (by thread)",
+      "webhookId": "d8494759-279d-4e72-80e5-e287c339e612",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA",
+          "mode": "list",
+          "cachedResultName": "Jira Demo Spreadsheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": 872154701,
+          "mode": "list",
+          "cachedResultName": "First Steps",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit#gid=872154701"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "category",
+              "lookupValue": "eSim activation issue"
+            }
+          ]
+        },
+        "options": {
+          "returnFirstMatch": true
+        }
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1168,
+        1312
+      ],
+      "id": "aca28add-736a-42a4-811e-51e5bc9274d6",
+      "name": "FirstStepLookup1",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "TCDZNj0mGgrocrTe",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "sendTo": "testiptribe@gmail.com",
+        "subject": "=[{{ $json.output.ticket.status }}][{{ $json.output.thread.messages[0].id }}]{{ $json.output.ticket.category }}",
+        "message": "={{ $json.output.draft_reply.html }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2160,
+        1424
+      ],
+      "id": "ecc6dca7-017b-4c7f-9427-d23cba93f11b",
+      "name": "Escalate to Singtel",
+      "webhookId": "33f75bd3-3f91-4802-a78b-8fa398db8324",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        1392,
+        1424
+      ],
+      "id": "0a1cbb11-aaa0-414c-9fff-f7c0b12f7948",
+      "name": "Merge3"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatDeepSeek",
+      "typeVersion": 1,
+      "position": [
+        1808,
+        1600
+      ],
+      "id": "98a3aaa1-3384-4b58-b6ea-074a070b528c",
+      "name": "DeepSeek Chat Model1",
+      "credentials": {
+        "deepSeekApi": {
+          "id": "4fm8TKBLqEFKu0RO",
+          "name": "DeepSeek account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You are a telco support AI preparing an ESCALATION package for a SYSTEM ENGINEER about an eSIM case.\n\nOUTPUT CONTRACT\n- You MUST output JSON that conforms EXACTLY to the provided JSON Schema (no extra keys, no markdown, no code fences).\n- Do not invent facts or IDs. Use only the inputs provided.\n- Preserve message order and content. You may trim excessive quoted history, but keep the latest customer content intact.\n\nAUDIENCE & TONE\n- Audience: internal SYSTEM ENGINEER (technical; no customer-facing pleasantries).\n- Tone: concise, factual, actionable.\n\nREQUIRED CONTENT\n1) ticket.status: use \"escalated\".\n2) issue_summary:\n   - title: one-line headline of the problem.\n   - description: 3–6 lines with key details (device, error text, country/roaming context, order/reference IDs, timestamps if present).\n   - entities: list of salient terms (device models, carriers, error codes, order refs, countries).\n3) draft_reply.html:\n   - Purpose: an HTML escalation note addressed to the SYSTEM ENGINEER.\n   - Sections (in this order):\n     a) Heading: “Escalation: eSIM – Not Solved”\n     b) Brief summary block (title + 3–6 line description)\n     c) “Customer” block (name, email)\n     d) “Troubleshooting already provided to customer” (bullet list if steps exist; otherwise state “No steps recorded”)\n     e) “Email Thread” block showing the full thread as HTML:\n        - Render OLDEST → NEWEST.\n        - For each message, show date/time (as-is), From, To, Subject, and a short body excerpt (first ~600 chars). Preserve line breaks with <br>.\n        - Wrap each message in a container (e.g., <div style=\"margin:8px 0;padding:8px;border:1px solid #eee;border-radius:8px\">…</div>)\n     f) “Next actions requested” (bullet list of 2–4 concrete checks or logs for the engineer)\n   - HTML rules: clean, inline-friendly HTML only (<div>, <p>, <ul>, <li>, <ol>, <b>, <i>, <br>, simple inline styles). No external CSS/JS.\n   - Escape angle brackets in any user-provided text.\n\nGENERAL RULES\n- Keep it compact but complete. Prefer bullet lists over long prose.\n- If some fields are missing in input, omit that detail gracefully (do not hallucinate).\n\nTHREAD META\nthreadId: {{ $json.thread.threadId }}\ncategory: {{ $json.thread.category }}\nlabels: {{ ($json.thread.labels || []).join(', ') }}\n\nCUSTOMER\nname: {{ $json.customer.name || '' }}\nemail: {{ $json.customer.email || '' }}\n\nTROUBLESHOOTING STEPS (if any)\n{{ $json.steps_clean || '' }}\n\nMESSAGES (JSON, oldest→newest or unsorted):\n{{ JSON.stringify($json.thread.messages) }}\n\nTASKS\n1) Set ticket.status = \"escalated\".\n2) Produce issue_summary {title, description, entities}.\n3) Produce draft_reply.html addressed to the SYSTEM ENGINEER including:\n   - summary block,\n   - customer block,\n   - steps provided,\n   - FULL email thread (oldest→newest, with date/from/to/subject/body excerpt),\n   - and a short “Next actions requested” list.\nReturn JSON only (conforming to the schema).\n",
+        "hasOutputParser": true,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        1808,
+        1424
+      ],
+      "id": "4e42a200-95f4-4d64-b848-ca68e04575ef",
+      "name": "TicketSummariser"
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * Prep thread + context for AI Structured Output\n * Input shape matches your sample (headers as object, text/html present).\n * If you ALSO have a prior node that fetched the whole thread (e.g. \"Thread: Get Many\"),\n * set THREAD_NODE_NAME to that node name to include all messages; otherwise it will\n * just package the current message.\n */\n\nconst THREAD_NODE_NAME = 'Thread: Get Many'; // ← change if you actually have such a node; else leave as-is\n\nfunction stripHtml(html=''){\n  return String(html)\n    .replace(/<style[\\s\\S]*?<\\/style>/gi,' ')\n    .replace(/<script[\\s\\S]*?<\\/script>/gi,' ')\n    .replace(/<[^>]+>/g,' ')\n    .replace(/\\s+/g,' ')\n    .trim();\n}\nfunction getHeader(headersObj, key){\n  if (!headersObj) return '';\n  const v = headersObj[key] || headersObj[key.toLowerCase()];\n  if (!v) return '';\n  return String(v).replace(/^[A-Za-z-]+:\\s*/,'').trim(); // strip \"Subject: \"\n}\nfunction pickFromAddr(obj){\n  // Prefer structured field\n  const v = obj.from && Array.isArray(obj.from.value) ? obj.from.value[0] : null;\n  return {\n    name:  v?.name || getHeader(obj.headers, 'from'),\n    email: v?.address || ''\n  };\n}\nfunction pickToAddrs(obj){\n  if (obj.to && Array.isArray(obj.to.value)) {\n    return obj.to.value.map(v => v.address).filter(Boolean);\n  }\n  return [];\n}\nfunction itemToMessage(j){\n  const id   = j.id || j.messageId || '';\n  const date = j.internalDate ? Number(j.internalDate)\n             : j.date ? j.date\n             : getHeader(j.headers, 'date');\n  const subject = j.subject\n               || getHeader(j.headers, 'subject')\n               || '';\n  const body_text = j.text\n                 || stripHtml(j.html || j.textAsHtml || '');\n  const fromHdr = getHeader(j.headers, 'from');\n  const from = fromHdr || (j.from && j.from.text) || '';\n  const toHdr = getHeader(j.headers, 'to');\n  const to = toHdr || (j.to && j.to.text) || (pickToAddrs(j).join(', ')) || '';\n  return {\n    id: String(id || ''),\n    date: date ?? '',\n    from: String(from || ''),\n    to: String(to || ''),\n    subject: String(subject || ''),\n    body_text: String(body_text || '').slice(0, 8000), // keep sane length\n  };\n}\n\n// Try to gather full thread if a node with that name exists; otherwise use current item only.\nlet threadItems = [];\ntry {\n  threadItems = $items(THREAD_NODE_NAME, 0) || [];\n} catch (e) {\n  threadItems = [];\n}\n\nlet messages = [];\nif (threadItems.length) {\n  messages = threadItems.map(it => itemToMessage(it.json || {}));\n} else {\n  messages = [ itemToMessage($json) ];\n}\n\n// Sort oldest → newest (handles number ms or ISO string)\nmessages.sort((a,b)=>{\n  const aT = typeof a.date === 'number' ? a.date : Date.parse(a.date || 0);\n  const bT = typeof b.date === 'number' ? b.date : Date.parse(b.date || 0);\n  return (aT||0) - (bT||0);\n});\n\n// Customer (from first/original message if available; else from current)\nconst original = messages[0] || {};\nconst latest   = messages[messages.length - 1] || {};\nconst fromStruct = pickFromAddr($json);\nconst customer = {\n  name:  fromStruct.name || '',\n  email: fromStruct.email || ''\n};\n\n// Clean steps: convert literal \"\\n\" to real newlines\nconst steps_clean = String($json.steps || '').replace(/\\\\n/g, '\\n').trim();\n\n// Heuristic email type (you can override upstream)\nlet email_type = ($json.email_type) || (\n  String($json.category || '').toLowerCase().includes('esim')\n    ? 'first_steps'\n    : 'reminder'\n);\n\n// Build final payload for the AI node\nreturn [{\n  ...$json,\n  email_type,\n  steps_clean,\n  customer,\n  thread: {\n    threadId: $json.threadId || $json.id || '',\n    category: $json.category || '',\n    labels: Array.isArray($json.labelIds) ? $json.labelIds : [],\n    messages\n  },\n  // handy extras if you want them later\n  originalSubject: original.subject || '',\n  originalBodyPlain: original.body_text || '',\n  latestPlain: latest.body_text || ''\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1600,
+        1424
+      ],
+      "id": "5bd843b5-4b51-4a8f-8b29-1aeee93e5e54",
+      "name": "pre-clean"
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"additionalProperties\": false,\n  \"required\": [\"ticket\", \"customer\", \"thread\", \"issue_summary\", \"draft_reply\"],\n  \"properties\": {\n    \"ticket\": {\n      \"type\": \"object\",\n      \"required\": [\"thread_id\", \"category\", \"status\"],\n      \"properties\": {\n        \"thread_id\": { \"type\": \"string\" },\n        \"category\":  { \"type\": \"string\" },\n        \"status\":    { \"type\": \"string\", \"enum\": [\"new\",\"awaiting-customer\",\"reminded\",\"escalated\",\"solved\",\"open\"] }\n      },\n      \"additionalProperties\": false\n    },\n    \"customer\": {\n      \"type\": \"object\",\n      \"required\": [\"name\", \"email\"],\n      \"properties\": {\n        \"name\":  { \"type\": \"string\" },\n        \"email\": { \"type\": \"string\" }\n      },\n      \"additionalProperties\": false\n    },\n    \"thread\": {\n      \"type\": \"object\",\n      \"required\": [\"messages\"],\n      \"properties\": {\n        \"messages\": {\n          \"type\": \"array\",\n          \"items\": {\n            \"type\": \"object\",\n            \"required\": [\"id\",\"date\",\"from\",\"to\",\"subject\",\"body_text\"],\n            \"properties\": {\n              \"id\":        { \"type\": \"string\" },\n              \"date\":      { \"type\": [\"string\",\"number\"] },\n              \"from\":      { \"type\": \"string\" },\n              \"to\":        { \"type\": \"string\" },\n              \"subject\":   { \"type\": \"string\" },\n              \"body_text\": { \"type\": \"string\" }\n            },\n            \"additionalProperties\": false\n          }\n        }\n      },\n      \"additionalProperties\": false\n    },\n    \"issue_summary\": {\n      \"type\": \"object\",\n      \"required\": [\"title\",\"description\"],\n      \"properties\": {\n        \"title\":       { \"type\": \"string\" },\n        \"description\": { \"type\": \"string\" },\n        \"entities\":    { \"type\": \"array\", \"items\": { \"type\": \"string\" } }\n      },\n      \"additionalProperties\": false\n    },\n    \"draft_reply\": {\n      \"type\": \"object\",\n      \"required\": [\"subject\",\"html\"],\n      \"properties\": {\n        \"subject\": { \"type\": \"string\" },\n        \"html\":    { \"type\": \"string\" }\n      },\n      \"additionalProperties\": false\n    }\n  }\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        1952,
+        1600
+      ],
+      "id": "b6ab6fb2-9a5f-46e7-8b68-578e1631013a",
+      "name": "Structured Output Parser"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Build a single key→value object matching your sheet headers\n// Headers: timestamp | threadId | messageId | subject | category | confidence | action\n\n// Prefer SG time in ISO-like format; ISO UTC is also fine for Sheets.\nconst ts = new Date().toISOString();  // or add TZ label: new Date().toLocaleString('en-SG', { hour12:false, timeZone:'Asia/Singapore' })\n\n// Pull from current item with fallbacks (works with your Structured Output path too)\nconst category =\n  $json.category\n  || $json.data?.ticket?.category\n  || 'eSim activation issue';\n\nconst confidence =\n  $json.confidence\n  ?? $json.data?.confidence\n  ?? ''; // may be empty if you didn’t store it\n\nconst row = {\n  timestamp: ts,\n  threadId:  $json.threadId || $json.data?.ticket?.thread_id || '',\n  messageId: $json.messageId || $json.id || '',\n  subject:   $json.subject   || $json.originalSubject || '',\n  category,\n  confidence,\n  action: 'ESCALATED',\n};\n\nreturn [{ ...$json, _logRow: row }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2400,
+        1424
+      ],
+      "id": "87d02962-be02-4d2b-a0c1-0653be870743",
+      "name": "BuildLogRow"
+    },
+    {
+      "parameters": {
+        "jsCode": "function asList(stepsRaw){\n  if (!stepsRaw) return '';\n  const text = String(stepsRaw).replace(/\\\\n/g, '\\n').trim();\n  const lines = text.split(/\\r?\\n/).map(l => l.replace(/^\\s*[-*•]\\s+/, '').trim()).filter(Boolean);\n  return lines.length ? '<ul>' + lines.map(l => `<li>${l}</li>`).join('') + '</ul>' : `<pre>${text}</pre>`;\n}\n\n// Build a compact thread excerpt from Get Many’s output (node 4)\nfunction threadExcerpt(){\n  // n8n passes prior items separately; pull them with $items('Gmail - Message → Get Many')\n  const msgs = $items('Get Many (by thread)', 0) || [];\n  // Take last 5 snippets for brevity\n  const last = msgs.slice(-5).map((it, i) => {\n    const j = it.json || {};\n    const snip = (j.snippet || '').replace(/\\s+/g, ' ').trim();\n    return `• ${snip}`;\n  }).join('<br>');\n  return last ? `<div style=\"font-size:12px;color:#555\">${last}</div>` : '';\n}\n\nconst stepsHtml = asList($json.steps);\nconst customerMsg = ($json.bodyPlain || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');\nconst excerpt = threadExcerpt();\n\nconst escalationHtml = `\n<div style=\"font-family:Arial,Helvetica,sans-serif;line-height:1.5;color:#111;\">\n<p><b>Escalation: Customer indicated “NOT SOLVED”</b></p>\n<p>\n  Dear Singtel Engineer-in-charge, please find the following eSIM activation issue faced by Customer \n  <b>{{ $input.first().json[\"From\"] }}</b>.\n</p>\n\n<p><b>Subject:</b> {{ $input.first().json[\"category\"] }}</p>\n<p><b>Thread ID:</b> {{ $input.first().json[\"threadId\"] }}</p>\n<p><b>From:</b> Tribal AI</p>\n\n  <p style=\"margin-top:12px;\"><b>Customer’s latest reply:</b></p>\n  <blockquote style=\"margin:8px 0;padding-left:12px;border-left:3px solid #e5e5e5;\">${customerMsg}</blockquote>\n\n  ${stepsHtml ? `<p><b>Troubleshooting steps already provided to customer:</b></p>${stepsHtml}` : ''}\n\n  ${excerpt ? `<hr style=\"border:none;border-top:1px solid #e5e5e5;margin:16px 0;\">\n  <p style=\"margin:0 0 6px 0;\"><b>Recent thread excerpts:</b></p>${excerpt}` : ''}\n\n  <p style=\"margin-top:16px;\">Please review and advise next actions.</p>\n</div>\n`;\n\nreturn [{ ...$json, escalationHtml }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1536,
+        1264
+      ],
+      "id": "71d0d5d0-9560-4d68-845a-99c600342013",
+      "name": "BuildEscalationHTML"
+    },
+    {
+      "parameters": {
+        "operation": "reply",
+        "messageId": "={{ $json.messageId }}",
+        "message": "Sorry I cannot solve this at the moment. Please contact admin...",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        448,
+        544
+      ],
+      "id": "bff76430-26b9-407f-9b8e-4b22d0ff92d4",
+      "name": "Reply irrelevant tickets",
+      "webhookId": "8c2ef91f-80fd-45a9-b71a-0c5c4279df35",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyX",
+              "value": 1,
+              "unit": "minutes"
+            }
+          ]
+        },
+        "filters": {
+          "q": "=in:inbox is:unread -label:\"ticket/awaiting-customer\" -label:\"ticket/reminded\" -label:\"ticket/closed\" -label:\"ticket/escalated\""
+        }
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -1216,
+        304
+      ],
+      "id": "90308908-44a6-4cf3-a78f-d5ba94e933be",
+      "name": "eSim Trigger",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "67b2d13a-4e76-44a4-8585-dc49bc357623",
+              "leftValue": "={{ $json.output.status }}",
+              "rightValue": "solved",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        544,
+        1424
+      ],
+      "id": "1a4032ad-b204-46c3-a517-7fcd96835e65",
+      "name": "IF solved"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA",
+          "mode": "list",
+          "cachedResultName": "Jira Demo Spreadsheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "ESIM Demo Logs",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "action": "Sent first troubleshooting steps",
+            "threadId": "={{ $json.threadId }}"
+          },
+          "matchingColumns": [
+            "threadId"
+          ],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "threadId",
+              "displayName": "threadId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "messageId",
+              "displayName": "messageId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "confidence",
+              "displayName": "confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "action",
+              "displayName": "action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "row_number",
+              "displayName": "row_number",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "readOnly": true,
+              "removed": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1312,
+        736
+      ],
+      "id": "6760924a-d919-4a14-a67f-2dcb90d40213",
+      "name": "Log as SentFirstSteps",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "TCDZNj0mGgrocrTe",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA",
+          "mode": "list",
+          "cachedResultName": "Jira Demo Spreadsheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "ESIM Demo Logs",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "messageId": "={{ $json.messageId }}",
+            "action": "Unable to solve. Closed."
+          },
+          "matchingColumns": [
+            "messageId"
+          ],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "threadId",
+              "displayName": "threadId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "messageId",
+              "displayName": "messageId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "confidence",
+              "displayName": "confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "action",
+              "displayName": "action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        656,
+        544
+      ],
+      "id": "92adae34-da61-40eb-87c7-c4a26347acac",
+      "name": "Log as UnableToSolve",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "TCDZNj0mGgrocrTe",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## AI Ticker Classifier \nFor demo purposes, used generic chat completion model + classifier prompt to output category in JSON format.",
+        "height": 128,
+        "width": 288
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -592,
+        -16
+      ],
+      "typeVersion": 1,
+      "id": "c6b5d599-4334-4a96-9da4-ae1e631e6c01",
+      "name": "Sticky Note4"
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA",
+          "mode": "list",
+          "cachedResultName": "Jira Demo Spreadsheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "ESIM Demo Logs",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "messageId": "={{ $json.id }}",
+            "action": "Reminded",
+            "threadId": "={{ $json.messages[0].threadId }}",
+            "timestamp": "={{ $now}}",
+            "subject": "={{ $('Log Ticket Prediction').item.json.subject }}",
+            "category": "={{ $('Log Ticket Prediction').item.json.category }}",
+            "confidence": "-"
+          },
+          "matchingColumns": [
+            "messageId"
+          ],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "threadId",
+              "displayName": "threadId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "messageId",
+              "displayName": "messageId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "confidence",
+              "displayName": "confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "action",
+              "displayName": "action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2768,
+        752
+      ],
+      "id": "6a75e1f3-7d82-4744-9b24-2f5c21cb93b8",
+      "name": "Log as Reminded",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "TCDZNj0mGgrocrTe",
+          "name": "Google Sheets account"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "subject": "={{ $json.subject }}",
+        "emailType": "html",
+        "message": "={{ $json.html }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -848,
+        -432
+      ],
+      "id": "4d9f4485-079e-4845-8d6b-78799bb9ceb4",
+      "name": "Data Roaming Draft",
+      "webhookId": "36b4185d-618d-46ae-a6e2-11865de82ac0",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "blfACsdQyBJZseNT",
+          "name": "Customer Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// === CONFIG ===\nconst TO = 'admin@example.com';   // change to your address\nconst CC = '';                    // optional\n\nconst subject = '[ALERT][Customer 2] Data roaming not working (Japan • Chiba)';\nconst html = `\n<div style=\"font-family:Arial,Helvetica,sans-serif;line-height:1.5;color:#111\">\n  <p><b>Alert:</b> Customer reports no data roaming in Japan (Chiba).</p>\n  <p><b>Customer:</b> Customer 2</p>\n  <p><b>Issue:</b> Set MVNO to \"Singtel\" but still no data roaming.</p>\n  <ul>\n    <li>Location: Japan, Chiba</li>\n    <li>Selected network/MVNO: Singtel (as stated)</li>\n    <li>Symptom: no data connectivity while roaming</li>\n    <li>When: now (demo)</li>\n  </ul>\n  <hr style=\"border:none;border-top:1px solid #eee;margin:12px 0\">\n  <p><i>First checks (L1):</i></p>\n  <ul>\n    <li>Ensure Data Roaming is enabled on device.</li>\n    <li>Manually select a local partner network (Docomo/KDDI/SoftBank).</li>\n    <li>Toggle Airplane Mode and reboot.</li>\n    <li>Verify plan/roaming entitlement on account.</li>\n  </ul>\n</div>`.trim();\n\nreturn [{ json: { to: TO, cc: CC, subject, html } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1072,
+        -432
+      ],
+      "id": "12ed2046-2be4-4528-b32a-4e109414b4b6",
+      "name": "buildemail1"
+    },
+    {
+      "parameters": {
+        "resource": "draft",
+        "subject": "={{ $json.subject }}",
+        "emailType": "html",
+        "message": "={{ $json.html }}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -848,
+        -656
+      ],
+      "id": "4692eb43-c59c-4303-8a66-de12f920e566",
+      "name": "eSim Draft",
+      "webhookId": "36b4185d-618d-46ae-a6e2-11865de82ac0",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "blfACsdQyBJZseNT",
+          "name": "Customer Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// === CONFIG ===\nconst TO = 'admin@example.com';   // change to your address\nconst CC = '';                    // optional\n\nconst subject = '[ALERT][Customer 1] eSIM activation cannot proceed';\nconst html = `\n<div style=\"font-family:Arial,Helvetica,sans-serif;line-height:1.5;color:#111\">\n  <p><b>Alert:</b> Customer reports eSIM activation failure.</p>\n  <p><b>Customer:</b> Customer 1</p>\n  <p><b>Issue:</b> eSIM cannot activate; already tried restarting, still cannot proceed.</p>\n  <ul>\n    <li>Device: iPhone 14</li>\n    <li>Error text: (not provided)</li>\n    <li>When: now (demo)</li>\n  </ul>\n  <hr style=\"border:none;border-top:1px solid #eee;margin:12px 0\">\n  <p><i>First checks (L1):</i></p>\n  <ul>\n    <li>Confirm device supports eSIM; Wi-Fi on during activation.</li>\n    <li>Retry QR / activation code; ensure profile not expired.</li>\n    <li>Set eSIM as default for data; reboot device.</li>\n  </ul>\n</div>`.trim();\n\nreturn [{ json: { to: TO, cc: CC, subject, html } }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1072,
+        -656
+      ],
+      "id": "75e3232e-964a-4ca8-94a5-412794f219ea",
+      "name": "buildemail"
+    },
+    {
+      "parameters": {
+        "content": "## Gmail Draft Builder from USER\nFor demo purposes only.\nDraft 1: eSim category ticket\nDraft 2: Data Roaming category ticket",
+        "height": 112,
+        "width": 384
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -1536,
+        -672
+      ],
+      "typeVersion": 1,
+      "id": "c8bc3ac7-760a-4b34-8974-e10fdcc4b557",
+      "name": "Sticky Note3"
+    },
+    {
+      "parameters": {
+        "operation": "update",
+        "documentId": {
+          "__rl": true,
+          "value": "1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA",
+          "mode": "list",
+          "cachedResultName": "Jira Demo Spreadsheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "ESIM Demo Logs",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "messageId": "={{ $json.messageId }}",
+            "action": "Solved"
+          },
+          "matchingColumns": [
+            "messageId"
+          ],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "threadId",
+              "displayName": "threadId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "messageId",
+              "displayName": "messageId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "confidence",
+              "displayName": "confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "action",
+              "displayName": "action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        704,
+        1216
+      ],
+      "id": "63806ccc-5570-4337-be9f-6dccec8c8fd5",
+      "name": "Log as Solved",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "TCDZNj0mGgrocrTe",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "reply",
+        "messageId": "={{ $json.id }}",
+        "message": "Thank you. Your ticket is now SOLVED.",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        928,
+        1216
+      ],
+      "id": "c5c622da-3a1d-4829-a5ae-8d32d6254ca7",
+      "name": "Reply Solved",
+      "webhookId": "8c2ef91f-80fd-45a9-b71a-0c5c4279df35",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "content": "## AI Ticker Summariser\nCompiles and cleans entire ticket thread with enquiry flow and steps done.",
+        "height": 112,
+        "width": 304
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1776,
+        1248
+      ],
+      "typeVersion": 1,
+      "id": "5bdc2e99-c845-492e-967c-2962632fd143",
+      "name": "Sticky Note5"
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA",
+          "mode": "list",
+          "cachedResultName": "Jira Demo Spreadsheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "ESIM Demo Metrics",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "messageId": "={{ $json._logRow.messageId }}",
+            "timestamp": "={{ $now}}",
+            "threadId": "={{ $json._logRow.threadId }}",
+            "category": "=\"",
+            "subject": "={{ $json._logRow.category }}",
+            "confidence": "=-",
+            "action": "={{ $json._logRow.action }}"
+          },
+          "matchingColumns": [
+            "messageId"
+          ],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threadId",
+              "displayName": "threadId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "messageId",
+              "displayName": "messageId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "confidence",
+              "displayName": "confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "action",
+              "displayName": "action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        2640,
+        1424
+      ],
+      "id": "b12ea48a-93e6-451b-9ec8-d1582cf5b5e3",
+      "name": "Log Escalation",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "TCDZNj0mGgrocrTe",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA",
+          "mode": "list",
+          "cachedResultName": "Jira Demo Spreadsheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "ESIM Demo Metrics",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "messageId": "={{ $json.id }}",
+            "timestamp": "={{ $now}}",
+            "threadId": "={{ $json.messages[0].threadId }}",
+            "category": "={{ $json.targetLabel }}",
+            "subject": "={{ $json.category }}",
+            "confidence": "={{ $json.confidence }}"
+          },
+          "matchingColumns": [
+            "messageId"
+          ],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "threadId",
+              "displayName": "threadId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "messageId",
+              "displayName": "messageId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "confidence",
+              "displayName": "confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "action",
+              "displayName": "action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        48,
+        656
+      ],
+      "id": "88270619-6abd-46fb-b145-5ad8d4d2a970",
+      "name": "Log Ticket Prediction",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "TCDZNj0mGgrocrTe",
+          "name": "Google Sheets account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "5d912c9a-e328-4af3-8c85-f43782b02535",
+              "leftValue": "={{ $json.hasCustomerReply === true }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        -576,
+        944
+      ],
+      "id": "5fc424a6-ae20-429c-92bb-13313073595a",
+      "name": "IF Reply"
+    },
+    {
+      "parameters": {
+        "content": "## Checks if customer replies\ntrue = reply > trigger Workflow B\nfalse = no reply > send  reminder email\nreminder logic does work",
+        "height": 128,
+        "width": 336
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        -672,
+        784
+      ],
+      "typeVersion": 1,
+      "id": "d92c7987-080a-4a22-b64b-ab7bb796a9ed",
+      "name": "Sticky Note6"
+    },
+    {
+      "parameters": {
+        "content": "## Checks if Ticket Category is eSim\ntrue = not eSim > email cannot help\nfalse = eSim > continue flow",
+        "height": 144,
+        "width": 336
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        48,
+        480
+      ],
+      "typeVersion": 1,
+      "id": "0eb8c006-a26a-4d2f-a5d2-925cdcf20885",
+      "name": "Sticky Note7"
+    },
+    {
+      "parameters": {
+        "operation": "reply",
+        "messageId": "={{ $json.messageId }}",
+        "message": "={{ $json.reminderHtml }}",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2384,
+        976
+      ],
+      "id": "e8e58de5-3113-49ce-b3c2-46c70c82f3a0",
+      "name": "Close Email",
+      "webhookId": "8d05749f-ff31-47cf-94fb-da37ffedc783",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA",
+          "mode": "list",
+          "cachedResultName": "Jira Demo Spreadsheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "ESIM Demo Logs",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "messageId": "={{ $json.id }}",
+            "action": "Closed",
+            "threadId": "={{ $json.threadId }}",
+            "timestamp": "={{ $now}}",
+            "subject": "={{ $json.subject }}",
+            "category": "={{ $json.category }}",
+            "confidence": "-"
+          },
+          "matchingColumns": [
+            "messageId"
+          ],
+          "schema": [
+            {
+              "id": "timestamp",
+              "displayName": "timestamp",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "threadId",
+              "displayName": "threadId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "messageId",
+              "displayName": "messageId",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "subject",
+              "displayName": "subject",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "category",
+              "displayName": "category",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "confidence",
+              "displayName": "confidence",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "action",
+              "displayName": "action",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        3168,
+        960
+      ],
+      "id": "e0ba369c-a9a9-490b-aa8a-2ebeeab511dd",
+      "name": "Log as Closed",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "TCDZNj0mGgrocrTe",
+          "name": "Google Sheets account"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "jsCode": "// === Config (change if needed) ===\nconst stepsHtml = $json.esimStepsHtml || ''; // reuse earlier steps if available\n\n// === Render HTML ===\nconst reminderHtml = `\n<div style=\"font-family: Arial, Helvetica, sans-serif; line-height:1.5; color:#111;\">\n  <p>Hello,</p>\n\n  <p>The system will now be closing this ticket.</p>\n\n  <p>If you are still facing any issues, please raise a new ticket or contact our team at \n  <a href=\"mailto:tribalaiiptribe@gmail.com\">tribalaiiptribe@gmail.com</a>.</p>\n\n  ${\n    stepsHtml\n      ? `<hr style=\"border:none;border-top:1px solid #e5e5e5;margin:16px 0;\">\n         <p style=\"margin:0 0 6px 0;\"><b>Previously shared troubleshooting steps:</b></p>\n         ${stepsHtml}`\n      : ''\n  }\n\n  <p style=\"margin-top:16px;\">Thank you for your time and understanding.</p>\n  <p style=\"margin-top:6px;\">Warm regards,<br><b>Admin Support</b></p>\n</div>\n`.replace(/\\n\\s+\\n/g, '\\n'); // tidy extra blanks\n\nreturn [{ ...$json, reminderHtml }];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2192,
+        976
+      ],
+      "id": "6d692899-50a3-4e80-a4e5-9729fcc33e33",
+      "name": "closeHTML",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $json.id }}",
+        "labelIds": [
+          "Label_3430728297832940128"
+        ]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        864,
+        272
+      ],
+      "id": "1b91faa8-e898-4f1a-8ca2-58627fcef30d",
+      "name": "Add eSim Label",
+      "webhookId": "b7b4aec3-7bb4-4bdf-9d16-42a0a072ed4b",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "addLabels",
+        "messageId": "={{ $json.id }}",
+        "labelIds": [
+          "Label_8026941473554630890"
+        ]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        1088,
+        736
+      ],
+      "id": "2ab0e1e7-9671-498b-be4e-9e3ddb3584a5",
+      "name": "Add awaiting-customer Label",
+      "webhookId": "b7b4aec3-7bb4-4bdf-9d16-42a0a072ed4b",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "thread",
+        "operation": "addLabels",
+        "threadId": "={{ $json.threadId }}",
+        "labelIds": [
+          "Label_8397984576735599402"
+        ]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2576,
+        752
+      ],
+      "id": "b8e6e253-f414-4bf3-b289-50fa3f6f51f0",
+      "name": "Add reminded Label",
+      "webhookId": "b7b4aec3-7bb4-4bdf-9d16-42a0a072ed4b",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "resource": "thread",
+        "operation": "removeLabels",
+        "threadId": "={{ $json.threadId }}",
+        "labelIds": [
+          "Label_8026941473554630890"
+        ]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2576,
+        976
+      ],
+      "id": "4f1d82c0-f9d7-44b3-a9e4-024c39c13726",
+      "name": "Remove awaiting-customer Label",
+      "webhookId": "b7b4aec3-7bb4-4bdf-9d16-42a0a072ed4b",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "resource": "thread",
+        "operation": "addLabels",
+        "threadId": "={{ $json.threadId }}",
+        "labelIds": [
+          "Label_1950377329184468207"
+        ]
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2768,
+        976
+      ],
+      "id": "acc5ce7d-cb91-4531-b418-fe976aed0657",
+      "name": "Add closed Label",
+      "webhookId": "b7b4aec3-7bb4-4bdf-9d16-42a0a072ed4b",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "reply",
+        "messageId": "={{ $json.output.thread.messages[0].id }}",
+        "message": "Ticket has been escalated, please wait until further notice. Thank you for your patience!",
+        "options": {
+          "appendAttribution": false
+        }
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2160,
+        1248
+      ],
+      "id": "3b33cbbf-9757-46f6-ac85-0f621327f796",
+      "name": "Escalation Notif to Customer",
+      "webhookId": "33f75bd3-3f91-4802-a78b-8fa398db8324",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "markAsRead",
+        "messageId": "={{ $json.messageId }}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -576,
+        384
+      ],
+      "id": "287c823b-40f0-4172-89d3-66a7ed5b2ea5",
+      "name": "Mark as Read1",
+      "webhookId": "d788e637-0024-4944-824e-d207679b2629",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "markAsRead",
+        "messageId": "={{ $json.id }}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -1088,
+        784
+      ],
+      "id": "2094eafc-14ec-4ffe-9bd1-db0d7c7e2542",
+      "name": "Mark as Read",
+      "webhookId": "d788e637-0024-4944-824e-d207679b2629",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "markAsRead",
+        "messageId": "={{ $json.id }}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        2400,
+        1248
+      ],
+      "id": "67ca54c7-5deb-4837-a556-637df4efd8f6",
+      "name": "Mark as Read2",
+      "webhookId": "d788e637-0024-4944-824e-d207679b2629",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "/**\n * CheckCustomerResponse (single-message input)\n * Input: one item shaped like your sample (not an array of messages)\n * Output:\n *  - hasCustomerReply (boolean)\n *  - replyMessageId, replyThreadId, replyFrom, replySubject, replySnippet, replyAt\n *  - normText (plain text for downstream NLP)\n */\n\nconst ADMIN = 'tribalaiiptribe@gmail.com';\n\nconst msg = $json || {};\n\n// --- helpers ---\nconst getFrom = () => {\n  // Try structured first\n  const v = (msg.from && msg.from.value && msg.from.value[0]) || null;\n  if (v && v.address) return `${v.name ? v.name + ' ' : ''}<${v.address}>`;\n  // Fallback to headers string\n  if (msg.headers && msg.headers.from) return String(msg.headers.from);\n  if (msg.From) return String(msg.From);\n  return '';\n};\n\nconst getFromEmail = (fromStr) => {\n  const m = String(fromStr).match(/<([^>]+)>/);\n  return (m ? m[1] : fromStr).trim().toLowerCase();\n};\n\nconst stripHtml = (html = '') =>\n  String(html)\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<[^>]+>/g, ' ')\n    .replace(/&nbsp;/g, ' ')\n    .replace(/&amp;/g, '&')\n    .replace(/\\s+/g, ' ')\n    .trim();\n\nconst firstNonEmpty = (...vals) => vals.find(v => v && String(v).trim().length) || '';\n\nconst parseDate = () => {\n  const d =\n    (msg.headers && msg.headers.date) ||\n    msg.date ||\n    (msg.headers && msg.headers.Date);\n  return d ? new Date(d).toISOString() : new Date().toISOString();\n};\n\n// --- build analyzable content ---\nconst subject = firstNonEmpty(msg.Subject, msg.subject);\nconst plain   = firstNonEmpty(msg.text, msg.bodyPlain);\nconst html    = firstNonEmpty(msg.textAsHtml, msg.html);\nconst body    = plain || stripHtml(html);\nconst snippet = (msg.snippet || body).slice(0, 200);\n\n// detect sender\nconst fromStr   = getFrom();\nconst fromEmail = getFromEmail(fromStr);\n\n// This is a customer reply if NOT from admin\nconst hasCustomerReply = fromEmail && !fromEmail.includes(ADMIN);\n\n// prepare output\nconst out = {\n  // message basics\n  id: msg.id || msg.messageId || '',\n  threadId: msg.threadId || '',\n  subject,\n  snippet,\n\n  // reply summary fields expected by your flow\n  hasCustomerReply,\n  replyMessageId: msg.id || msg.messageId || '',\n  replyThreadId: msg.threadId || '',\n  replyFrom: fromStr || '',\n  replySubject: subject || '',\n  replySnippet: snippet,\n  replyAt: parseDate(),\n\n  // normalized text for downstream NLP (Solve/Not-solved node)\n  normText: `${subject || ''} ${body || ''}`\n    .toLowerCase()\n    .replace(/\\s+/g, ' ')\n    .trim(),\n\n  // keep originals for debugging\n  rawFrom: fromStr,\n  labelIds: msg.labelIds || [],\n};\n\nreturn [ out ];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -880,
+        944
+      ],
+      "id": "f5668e6d-32c0-4efb-b3bb-c19e34d475dc",
+      "name": "Check customer repsonse",
+      "alwaysOutputData": true
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatDeepSeek",
+      "typeVersion": 1,
+      "position": [
+        128,
+        1296
+      ],
+      "id": "00d779c4-9fd6-4072-a7c8-a460c767eb9b",
+      "name": "DeepSeek Chat Model3",
+      "credentials": {
+        "deepSeekApi": {
+          "id": "4fm8TKBLqEFKu0RO",
+          "name": "DeepSeek account"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schemaType": "manual",
+        "inputSchema": "{\n  \"type\": \"object\",\n  \"required\": [\"status\", \"quote\", \"confidence\"],\n  \"properties\": {\n    \"status\": {\n      \"type\": \"string\",\n      \"enum\": [\"solved\", \"not_solved\", \"unclear\"],\n      \"description\": \"Customer intent in THIS reply only.\"\n    },\n    \"quote\": {\n      \"type\": \"object\",\n      \"required\": [\"text\"],\n      \"properties\": {\n        \"text\": { \"type\": \"string\", \"description\": \"The exact substring from the reply that justifies the decision.\" }\n      }\n    },\n    \"confidence\": {\n      \"type\": \"number\",\n      \"minimum\": 0,\n      \"maximum\": 1\n    }\n  }\n}"
+      },
+      "type": "@n8n/n8n-nodes-langchain.outputParserStructured",
+      "typeVersion": 1.3,
+      "position": [
+        272,
+        1296
+      ],
+      "id": "6010bd26-00e2-4496-bb5c-8beb6a936fbd",
+      "name": "Structured Output Parser1"
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=You classify whether a customer’s latest reply indicates that the issue is solved, not solved, or unclear.\n\nInput: a single string field `replyTextClean` which is the body-only reply (no subject, no quoted history, no signatures).\n\nRules:\n- Analyze ONLY the provided `replyTextClean`.\n- Return the minimal exact substring (contiguous, verbatim, case-preserving) from `replyTextClean` that justifies the decision.\n- If the message clearly affirms resolution (e.g., \"solved\", \"resolved\", \"fixed\", \"working now\", \"yes it works\"), choose \"solved\".\n- If the message clearly denies resolution (e.g., \"not solved\", \"no, it has not\", \"still not working\", \"cannot solve\", \"doesn't work\", \"issue persists\"), choose \"not_solved\".\n- If uncertain/hedging/partial (e.g., \"seems better\", \"will monitor\", \"sometimes works\"), choose \"unclear\".\n- If nothing indicates status, choose \"unclear\".\n- Output JSON ONLY in this schema:\n  {\"status\":\"solved|not_solved|unclear\",\"quote\":{\"text\":\"<verbatim minimal substring>\"},\"confidence\":<0..1>}\n\nCustomer reply (use exactly this variable as input):\n{{ $json.replyTextClean }}\n\nFew-shot:\n\"no, it has not\" → {\"status\":\"not_solved\",\"quote\":{\"text\":\"no, it has not\"},\"confidence\":0.9}\n\"No, it has not.\" → {\"status\":\"not_solved\",\"quote\":{\"text\":\"has not\"},\"confidence\":0.9}\n\"yes, it is working now\" → {\"status\":\"solved\",\"quote\":{\"text\":\"working now\"},\"confidence\":0.9}\n\"cannot solve after steps\" → {\"status\":\"not_solved\",\"quote\":{\"text\":\"cannot solve\"},\"confidence\":0.85}\n\"seems better, will monitor\" → {\"status\":\"unclear\",\"quote\":{\"text\":\"will monitor\"},\"confidence\":0.5}",
+        "hasOutputParser": true,
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        128,
+        1072
+      ],
+      "id": "cb7478ac-40f2-4cc6-a478-79d5010af72b",
+      "name": "SolveDetector"
+    },
+    {
+      "parameters": {
+        "pollTimes": {
+          "item": [
+            {
+              "mode": "everyX",
+              "value": 1,
+              "unit": "minutes"
+            }
+          ]
+        },
+        "simple": false,
+        "filters": {
+          "q": "in:inbox is:unread"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmailTrigger",
+      "typeVersion": 1.3,
+      "position": [
+        -1312,
+        944
+      ],
+      "id": "20092e77-de37-425b-8101-a10cbe7a9086",
+      "name": "ListenReply Trigger",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "thread",
+        "operation": "get",
+        "threadId": "={{$json.threadId || $json[\"Thread ID\"] || $json.id}}",
+        "simple": false,
+        "options": {}
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -1040,
+        1088
+      ],
+      "id": "987b34cb-5ca7-4613-af48-3e2c9b7499d9",
+      "name": "GetMany (by thread)",
+      "webhookId": "a587b779-958a-4e5e-8e5a-9bf3bd66b8f1",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        -288,
+        1072
+      ],
+      "id": "904c1ad0-53e2-4f6d-9bae-0a33a5b1969d",
+      "name": "Merge4"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Expect input = one item that contains { messages: [...] } from Gmail \"Thread: Get\"\n\nconst SUPPORT_FROM = ( $json.supportEmail || 'tribalaiiptribe@gmail.com' ).toLowerCase();\n\nfunction b64urlDecode(s='') {\n  try {\n    const pad = '==='.slice((s.length + 3) % 4);\n    const b64 = (s || '').replace(/-/g,'+').replace(/_/g,'/') + pad;\n    return Buffer.from(b64, 'base64').toString('utf8');\n  } catch { return ''; }\n}\n\n// Recursively pull first text/plain (prefer) else text/html from Gmail payload\nfunction extractBodies(payload) {\n  if (!payload) return { textPlain: '', textHtml: '' };\n\n  // direct body\n  const mime = payload.mimeType || '';\n  const data = payload.body?.data ? b64urlDecode(payload.body.data) : '';\n\n  if (mime.startsWith('text/plain')) return { textPlain: data, textHtml: '' };\n  if (mime.startsWith('text/html'))  return { textPlain: '',  textHtml: data };\n\n  // parts\n  if (Array.isArray(payload.parts)) {\n    let foundPlain = '', foundHtml = '';\n    for (const p of payload.parts) {\n      const child = extractBodies(p);\n      if (!foundPlain && child.textPlain) foundPlain = child.textPlain;\n      if (!foundHtml  && child.textHtml)  foundHtml  = child.textHtml;\n      if (foundPlain && foundHtml) break;\n    }\n    return { textPlain: foundPlain, textHtml: foundHtml };\n  }\n  return { textPlain: '', textHtml: '' };\n}\n\n// Strip quoted history & signatures (lightweight)\nfunction dequote(s='') {\n  return String(s)\n    .replace(/\\r/g,'')\n    .replace(/\\nOn .*?wrote:.*$/si,'')              // Gmail style\n    .replace(/-{2,}\\s*Original Message\\s*-{2,}.*$/si,'')\n    .replace(/From:\\s.*\\nSent:\\s.*\\nTo:\\s.*\\nSubject:.*$/si,'')\n    .trim();\n}\n\n// 1) Get and sort thread messages: newest → oldest\nconst msgs = ($json.messages || []).slice().sort(\n  (a,b) => Number(b.internalDate||0) - Number(a.internalDate||0)\n);\n\n// 2) Pick the newest **customer** message (not from support, not your Sent)\nconst latestCustomer = msgs.find(m => {\n  const from = String(m.From || m.headers?.from || '').toLowerCase();\n  const isSent = (m.labels || m.labelIds || []).some(l => \n    (l.id||l).toString().toUpperCase() === 'SENT'\n  );\n  return !isSent && !from.includes(SUPPORT_FROM);\n});\n\nif (!latestCustomer) {\n  // No customer reply yet\n  return [{\n    hasCustomerReply: false,\n    replyMessageId: '',\n    replyThreadId: $json.threadId || '',\n    replyFrom: '',\n    replySubject: '',\n    replyAt: '',\n    replyText: '',\n    replyHtml: '',\n  }];\n}\n\n// 3) Decode bodies\nconst { textPlain, textHtml } = extractBodies(latestCustomer.payload || {});\nconst plain = textPlain || '';\nconst html  = textHtml  || '';\nconst plainDequoted = dequote(plain);\n\n// HTML → text (fallback) if needed\nfunction htmlToText(h='') {\n  return String(h)\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<\\/p>/gi, '\\n')\n    .replace(/<[^>]+>/g, '')\n    .trim();\n}\nconst fallbackText = plainDequoted || dequote(htmlToText(html));\n\n// 4) Return clean reply for downstream NLP\nreturn [{\n  hasCustomerReply: true,\n  replyMessageId: latestCustomer.id || '',\n  replyThreadId: latestCustomer.threadId || ($json.threadId || ''),\n  replyFrom: latestCustomer.From || '',\n  replySubject: latestCustomer.Subject || '',\n  replyAt: new Date(Number(latestCustomer.internalDate||0)).toISOString(),\n  replyText: fallbackText,         // ← feed this to your solve detector\n  replyHtml: html,                 // optional\n  // keep original thread for auditing if needed\n  threadId: $json.threadId || '',\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -736,
+        1088
+      ],
+      "id": "97c3f6fb-2d5d-4206-a679-5e54dbe84009",
+      "name": "ExtractReplyBody"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Input: one item with { replyText, replyHtml, ... }\n// Output: adds replyTextClean (original-customer-only) and normText (normalized)\n\nfunction htmlToText(h = '') {\n  return String(h)\n    .replace(/<div class=\"gmail_quote[^>]*>[\\s\\S]*$/i, '') // drop quoted block\n    .replace(/<br\\s*\\/?>/gi, '\\n')\n    .replace(/<\\/p>/gi, '\\n')\n    .replace(/<[^>]+>/g, '')\n    .trim();\n}\n\nfunction stripQuotes(s = '') {\n  return String(s)\n    .replace(/\\r/g, '')\n    .replace(/\\nOn .*?wrote:.*$/si, '')                 // Gmail \"On ... wrote:\"\n    .replace(/-{2,}\\s*Original Message\\s*-{2,}.*$/si, '')// Outlook-style\n    .replace(/^\\s*>.+$/gmi, '')                         // quoted lines\n    .trim();\n}\n\nlet replyText = String($json.replyText || '');\n\n// Fallback: if replyText empty, derive from replyHtml\nif (!replyText && $json.replyHtml) {\n  replyText = htmlToText($json.replyHtml || '');\n}\n\n// Keep only the customer's fresh sentence(s), no history\nconst replyTextClean = stripQuotes(replyText);\n\n// Normalized form for downstream NLP\nconst normText = replyTextClean\n  .toLowerCase()\n  .replace(/[’‘`]/g, \"'\")\n  .replace(/[\"“”]/g, '\"')\n  .replace(/\\s+/g, ' ')\n  .trim();\n\nreturn [{\n  ...$json,\n  replyTextClean,\n  normText\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -96,
+        1072
+      ],
+      "id": "381ba7d6-6c4b-4f92-afbb-73a885d23ef2",
+      "name": "NormaliseReply"
+    },
+    {
+      "parameters": {
+        "amount": 1,
+        "unit": "minutes"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1520,
+        736
+      ],
+      "id": "5b0b1f10-1ba7-4a4d-a898-46ecbed4b39b",
+      "name": "Wait",
+      "webhookId": "d0fa753f-dab3-4737-98a0-f0f474a80ab3",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA",
+          "mode": "list",
+          "cachedResultName": "Jira Demo Spreadsheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "ESIM Demo Logs",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit#gid=0"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "threadId",
+              "lookupValue": "={{ $json.threadId }}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1728,
+        736
+      ],
+      "id": "1e87d56d-82c3-4338-af73-c490bfad4611",
+      "name": "GetThreadStatus",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "TCDZNj0mGgrocrTe",
+          "name": "Google Sheets account"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "6acc5091-c125-41b7-afa8-7f4932018b5e",
+              "leftValue": "={{\n  $json.action === 'solved' ||\n  $json.action === 'closed' ||\n  $json.action === 'ESCALATED'\n}}\n",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1952,
+        736
+      ],
+      "id": "cc4a3f5b-a339-470c-9d0e-15c33cf240d4",
+      "name": "If1",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "content": "### True > End (customer replied after start or ticket closed)\n### False > customer no reply, ticket open, continue to send reminder",
+        "height": 112,
+        "width": 368
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1824,
+        544
+      ],
+      "typeVersion": 1,
+      "id": "24fba938-b1a6-4cac-820d-ef24e9bbb147",
+      "name": "Sticky Note9",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "amount": 1,
+        "unit": "minutes"
+      },
+      "type": "n8n-nodes-base.wait",
+      "typeVersion": 1.1,
+      "position": [
+        1520,
+        960
+      ],
+      "id": "d423a5ac-9c72-48dd-9817-7223f6a504ff",
+      "name": "Wait1",
+      "webhookId": "d0fa753f-dab3-4737-98a0-f0f474a80ab3",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "documentId": {
+          "__rl": true,
+          "value": "1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA",
+          "mode": "list",
+          "cachedResultName": "Jira Demo Spreadsheet",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "ESIM Demo Logs",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1XULCjva2KR3fK-1qBXwi_78Dy5qCjUr5tTfdziterAA/edit#gid=0"
+        },
+        "filtersUI": {
+          "values": [
+            {
+              "lookupColumn": "threadId",
+              "lookupValue": "={{$json.threadId}}"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1728,
+        960
+      ],
+      "id": "f19a6c2c-ca14-4052-9f71-2cf841bc5e2a",
+      "name": "GetThreadStatus1",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "TCDZNj0mGgrocrTe",
+          "name": "Google Sheets account"
+        }
+      },
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "6acc5091-c125-41b7-afa8-7f4932018b5e",
+              "leftValue": "={{\n  $json.action === 'solved' ||\n  $json.action === 'closed' ||\n  $json.action === 'ESCALATED'\n}}\n",
+              "rightValue": "true",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1952,
+        960
+      ],
+      "id": "3311142b-d415-412c-b181-154fd1090199",
+      "name": "If2",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3.2,
+      "position": [
+        2976,
+        960
+      ],
+      "id": "34ee1482-c7c2-4f17-b6a0-39d76d69dfd6",
+      "name": "Merge5",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "content": "## Reminder and auto-closing logic",
+        "height": 512,
+        "width": 1904,
+        "color": 5
+      },
+      "type": "n8n-nodes-base.stickyNote",
+      "position": [
+        1456,
+        672
+      ],
+      "typeVersion": 1,
+      "id": "c15d0904-ac21-4032-93f5-0fdd60e70ae1",
+      "name": "Sticky Note8"
+    },
+    {
+      "parameters": {
+        "resource": "thread",
+        "operation": "removeLabels",
+        "threadId": "={{ $('ListenReply Trigger').item.json.threadId }}",
+        "labelIds": "={{ [\"Label_8026941473554630890\"] }}"
+      },
+      "type": "n8n-nodes-base.gmail",
+      "typeVersion": 2.1,
+      "position": [
+        -880,
+        784
+      ],
+      "id": "2cdb53f0-8c1d-46fd-acde-a7a328a05530",
+      "name": "Remove awaiting-customer Label1",
+      "webhookId": "b7b4aec3-7bb4-4bdf-9d16-42a0a072ed4b",
+      "credentials": {
+        "gmailOAuth2": {
+          "id": "4PlfSyWppkDTgewb",
+          "name": "Admin Gmail"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Normalise Email": {
+      "main": [
+        [
+          {
+            "node": "Classify",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Mark as Read1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DeepSeek Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Classify",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse + Map category": {
+      "main": [
+        [
+          {
+            "node": "Merge2",
+            "type": "main",
+            "index": 1
+          },
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge": {
+      "main": [
+        [
+          {
+            "node": "Get many labels",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Get many labels": {
+      "main": [
+        [
+          {
+            "node": "BuildLabelMap",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify": {
+      "main": [
+        [
+          {
+            "node": "Parse + Map category",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildLabelMap": {
+      "main": [
+        [
+          {
+            "node": "Merge1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ResolveLabelId": {
+      "main": [
+        [
+          {
+            "node": "Add eSim Label",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge1": {
+      "main": [
+        [
+          {
+            "node": "ResolveLabelId",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge2": {
+      "main": [
+        [
+          {
+            "node": "Log Ticket Prediction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If": {
+      "main": [
+        [
+          {
+            "node": "Reply irrelevant tickets",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Log as UnableToSolve",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "FirstStepLookup",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FirstStepLookup": {
+      "main": [
+        [
+          {
+            "node": "RenderSteps>HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "RenderSteps>HTML": {
+      "main": [
+        [
+          {
+            "node": "Reply FirstStep",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply FirstStep": {
+      "main": [
+        [
+          {
+            "node": "Add awaiting-customer Label",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reminder": {
+      "main": [
+        [
+          {
+            "node": "Add reminded Label",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "reminderHTML": {
+      "main": [
+        [
+          {
+            "node": "Reminder",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Many (by thread)": {
+      "main": [
+        [
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 1
+          },
+          {
+            "node": "FirstStepLookup1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "FirstStepLookup1": {
+      "main": [
+        [
+          {
+            "node": "Merge3",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge3": {
+      "main": [
+        [
+          {
+            "node": "pre-clean",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escalate to Singtel": {
+      "main": [
+        [
+          {
+            "node": "BuildLogRow",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DeepSeek Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "TicketSummariser",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "TicketSummariser": {
+      "main": [
+        [
+          {
+            "node": "Escalate to Singtel",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Escalation Notif to Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "pre-clean": {
+      "main": [
+        [
+          {
+            "node": "TicketSummariser",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "TicketSummariser",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "BuildLogRow": {
+      "main": [
+        [
+          {
+            "node": "Log Escalation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply irrelevant tickets": {
+      "main": [
+        []
+      ]
+    },
+    "eSim Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalise Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF solved": {
+      "main": [
+        [
+          {
+            "node": "Log as Solved",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Reply Solved",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Many (by thread)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "buildemail1": {
+      "main": [
+        [
+          {
+            "node": "Data Roaming Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "buildemail": {
+      "main": [
+        [
+          {
+            "node": "eSim Draft",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log as Solved": {
+      "main": [
+        []
+      ]
+    },
+    "Log Escalation": {
+      "main": [
+        []
+      ]
+    },
+    "Log Ticket Prediction": {
+      "main": [
+        [
+          {
+            "node": "If",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Reply": {
+      "main": [
+        [
+          {
+            "node": "Merge4",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Log as Reminded": {
+      "main": [
+        [
+          {
+            "node": "Wait1",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Merge5",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Close Email": {
+      "main": [
+        [
+          {
+            "node": "Remove awaiting-customer Label",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "closeHTML": {
+      "main": [
+        [
+          {
+            "node": "Close Email",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add eSim Label": {
+      "main": [
+        [
+          {
+            "node": "Merge2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add awaiting-customer Label": {
+      "main": [
+        [
+          {
+            "node": "Log as SentFirstSteps",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add reminded Label": {
+      "main": [
+        [
+          {
+            "node": "Log as Reminded",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Remove awaiting-customer Label": {
+      "main": [
+        [
+          {
+            "node": "Add closed Label",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Add closed Label": {
+      "main": [
+        [
+          {
+            "node": "Merge5",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Mark as Read1": {
+      "main": [
+        [
+          {
+            "node": "Merge",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Mark as Read": {
+      "main": [
+        [
+          {
+            "node": "Remove awaiting-customer Label1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Escalation Notif to Customer": {
+      "main": [
+        [
+          {
+            "node": "Mark as Read2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check customer repsonse": {
+      "main": [
+        [
+          {
+            "node": "IF Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "DeepSeek Chat Model3": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "SolveDetector",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Structured Output Parser1": {
+      "ai_outputParser": [
+        [
+          {
+            "node": "SolveDetector",
+            "type": "ai_outputParser",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "SolveDetector": {
+      "main": [
+        [
+          {
+            "node": "IF solved",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ListenReply Trigger": {
+      "main": [
+        [
+          {
+            "node": "Mark as Read",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "GetMany (by thread)",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Check customer repsonse",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GetMany (by thread)": {
+      "main": [
+        [
+          {
+            "node": "ExtractReplyBody",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge4": {
+      "main": [
+        [
+          {
+            "node": "NormaliseReply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "ExtractReplyBody": {
+      "main": [
+        [
+          {
+            "node": "Merge4",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "NormaliseReply": {
+      "main": [
+        [
+          {
+            "node": "SolveDetector",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log as SentFirstSteps": {
+      "main": [
+        [
+          {
+            "node": "Wait",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait": {
+      "main": [
+        [
+          {
+            "node": "GetThreadStatus",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GetThreadStatus": {
+      "main": [
+        [
+          {
+            "node": "If1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If1": {
+      "main": [
+        [],
+        [
+          {
+            "node": "reminderHTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait1": {
+      "main": [
+        [
+          {
+            "node": "GetThreadStatus1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GetThreadStatus1": {
+      "main": [
+        [
+          {
+            "node": "If2",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "If2": {
+      "main": [
+        [],
+        [
+          {
+            "node": "closeHTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log as Closed": {
+      "main": [
+        []
+      ]
+    },
+    "Merge5": {
+      "main": [
+        [
+          {
+            "node": "Log as Closed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": {
+    "node:eSim Trigger": {
+      "eSim Trigger": {
+        "lastTimeChecked": 1761185726,
+        "possibleDuplicates": [
+          "19a0eb886b576295"
+        ]
+      }
+    },
+    "node:Escalation Trigger": {
+      "Escalation Trigger": {
+        "lastTimeChecked": 1760583143,
+        "possibleDuplicates": [
+          "199eae92f8385179"
+        ]
+      }
+    },
+    "node:ListenReply Trigger": {
+      "ListenReply Trigger": {
+        "lastTimeChecked": 1761185724,
+        "possibleDuplicates": [
+          "19a0ed9a62ef5af8"
+        ]
+      }
+    },
+    "node:ListenReminded Trigger": {
+      "ListenReminded Trigger": {
+        "lastTimeChecked": 1760953411
+      }
+    }
+  },
+  "pinData": {},
+  "triggerCount": 2,
+  "meta": {
+    "templateCredsSetupCompleted": true
+  }
+}
