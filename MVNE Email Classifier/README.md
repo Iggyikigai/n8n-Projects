@@ -1,14 +1,14 @@
 # MVNE Email Classifier - eSIM Ticket Escalation System
 
-An AI-powered n8n workflow for automated email classification, ticket triage, and escalation for MVNE (Mobile Virtual Network Enabler) support operations, specifically designed for eSIM activation and related telco support issues.
+An AI-powered n8n workflow for automated email classification, ticket triage, and escalation for MVNE (Mobile Virtual Network Enabler) support operations, specifically designed for <u>eSIM activation</u> and related telco support issues.
 
 ## Overview
 
-This workflow automates the entire customer support lifecycle from initial email classification to ticket escalation, using AI to intelligently categorize support requests and manage customer interactions.
+This workflow automates the entire customer support lifecycle from initial email classification to ticket escalation, using AI to intelligently categorise support requests and manage customer interactions.
 
 ## Key Features
 
-- **AI-Powered Classification**: Automatically categorizes incoming emails into 5 predefined categories:
+- **AI-Powered Classification**: Automatically categorises incoming emails into 5 predefined categories:
   - eSim activation issue
   - Data roaming connectivity issues
   - Plan top-up issues
@@ -134,4 +134,5 @@ Get Thread → Prepare Context → AI Summarize → Send Escalation → Notify C
 ## License
 
 Apache-2.0
+
 
